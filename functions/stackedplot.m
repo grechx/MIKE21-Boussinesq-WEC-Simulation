@@ -1,0 +1,25 @@
+function [ ] = stackedplot( xdata,data, colour )
+%stackedplot - takes data matrix where each coloum is a seperate line and
+%plots it as a stacked line plot. The line spacing is taken into acount
+%useing the largest value.  
+
+Nresults=size(data,1);
+
+max_vale = max(max(data))*2;
+spacing_factor=max_vale;
+spacing=linspace(1,size(data,2)*spacing_factor,size(data,2));
+
+for n=1:size(data,2)
+plot(xdata,data(:,n)+ spacing(n),colour)
+hold on
+end
+
+set(gca,'yTick',spacing)
+set(gca,'YTickLabel',1:Nresults )
+
+
+y_max=(size(data,2)+1)*spacing_factor;
+ylim([0 y_max])
+
+end
+

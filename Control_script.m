@@ -1,0 +1,263 @@
+%% Frequency Varying Wave Energy Absorpsion 
+%Software developed to simulate a frequency varying energy absorpsion for
+%the simulation of wave energy converters. 
+% D  =  Working directory. Set working directory to Matlab_Test_Toolbox
+%       folder.  
+% F  =  Frequceny spectrum locator. If F = 1 then a user diffined spectrum
+%       with predifind wave preameters is created. If F =1 0 a Mike21 dfs0
+%       spectrum is imported froom the directory given in the variable
+%       infile.
+% N  =  Number of frequency bins when seperating the wave spectrum for the
+%       use in creating BW simulations.
+% A  =  Determins Power Transfer Function (PTF). 0 = Gaussian point
+%       absorber 1 = Oyster1 device.
+% T  =  File name/directory test number. 
+%#########################################
+%Control Parameters
+D = cd('D:\Charles\BW\Simplified_WEC\Small_Devices\Adpted_Porosity\Matlab_Test_Toolbox');
+F = 1; %1 = JONSWAP spectrum, 0 = Mike21 specturm.
+N = 72; %Number of Frequency used in monochromatic BW model simulation.
+A = 1; %0 = Guassian PTF, 1 = Oyster PTF.
+T = 17;  %Test number..... Odd numbers=tests Even number=baseline
+Baseline = 0; %If Baseline = 1  No WECs 
+
+%Domain - Flat or sloping domain
+Domain_slope=1/0;     %Grad of 1/0 provide a flat domain 
+
+%Boundary Wave Parameters 
+h = 10;             %Absolout depth in metres at the driving wave boundary.
+t_steps = 5000;     %Number of time steps of boundary input data.
+t_interval = 0.4;   %Time step interval for boundary input file in seconds.
+
+%Porosity parameters
+Porosity_template=('D:\Charles\BW\Simplified_WEC\Sponge+Porosity\Porosity\Porocity_700x750_11x4.dfs2');
+WEC_dimension.P_height=10; %Porosity structure in number of cells
+WEC_dimension.P_width=4;
+WEC_dimension.WEC_lat=300; %Location of center of porosity structures
+WEC_dimension.WEC_long=375;
+WEC_dimension.Number_devices=3;
+WEC_dimension.WEC_separation=(20*2.5)/2+WEC_dimension.P_height; %flap diameter multiplyed by required spacing 
+
+%BW parameters
+BW_dir=('D:\Charles\BW\Simplified_WEC\Small_Devices\Adpted_Porosity\Matlab_Test_Toolbox\Test_reference_ArrayLargeWidthDomain.bw');
+BW_dir_ref=BW_dir;
+
+%#########################################
+%Doamin Slope
+%If domain is not flat then create a new bathy and sponge file dfs2 file. 
+%Then rewrite BW_dir file to included
+if isinf(Domain_slope) == 0
+    
+    %get mesh filename
+    fid = fopen(BW_dir);
+    InputText=textscan(fid,'%s',318,'delimiter','\n');
+    BW_template=InputText{1};
+    ref_file=['D:\Charles\BW\Simplified_WEC' BW_template{17}(22:end-1)];
+    
+    [slope_filename max_depth]=Create_sloped_domain(ref_file,WEC_dimension.WEC_lat,Domain_slope );
+   
+    %get default sponge layer and apply new layer
+    [ sponge_filename ] = Sloped_domain_sponge_layer( BW_dir,slope_filename );
+    %reassign depth
+    h=abs(max_depth);
+end
+%If scrip fails while a simulation is runninig skip domain slope section
+
+%#########################################
+%Frequency Spectrum
+%Create JONSWAP or use Mike21 output
+if F == 1
+    %JONSWAP
+    Hm0=2; Tp=10; Tmin=4; Tdelta=1; Tsteps=13; gamma=3.3; sigma_a=0.07; sigma_b=0.09; 
+    WaveData=[Hm0 Tp Tmin Tdelta Tsteps gamma sigma_a sigma_b];
+    
+    S = JONSWAP( WaveData );
+elseif F == 0
+    %Mike21
+    infile=('D:\Charles\BW\Simplified_WEC\Small_Devices\Porosity\Wave_toolbox\Frequency_Spectra\test4.dfs0');
+    spec_data=read_dfs0(infile);
+    
+    S.freq=spec_data(:,1);
+    S.S=spec_data(:,2);
+end
+
+%Spilt into frequency bins
+S.freqi=linspace(min(S.freq),max(S.freq),N); %Creates list of new frequencies based on N
+S.Si=interp1(S.freq,S.S,S.freqi,'linear'); %interpolates S.S to fit new frequency bins
+
+%Calculate Hm0 and T for each N conponent
+S.Fdeltai=S.freqi(2)-S.freqi(1);
+S.m0=S.Si.*S.Fdeltai;
+
+ 
+WaveOut.Hm0=4*sqrt(S.m0);
+WaveOut.T=1./S.freqi;
+
+%Plot input and output spectra
+% figure
+% bar(S.freqi,S.m0,'w')
+% hold on
+% plot(S.freq,S.S)
+% stem(S.freqi,S.Si,'r')
+% stem(S.freqi,WaveOut.Hm0,'k')
+%#########################################
+%Create monochromatic wave files
+%Uses Mike21 Generation of Random Waves toolbox to create a depth dependant
+% monochromatic wave. Wavedir spesifies the file location where toolbox and
+%data files can be written to sub-folders. 
+
+%Parrent directory for toolbox and wave data file.
+Wavedir=(['D:\Charles\BW\Simplified_WEC\Small_Devices\Adpted_Porosity\Wave data\test' sprintf('%02.f',T)]);
+
+%Find/Create output folders
+if isdir(Wavedir) == 0; mkdir(Wavedir); end
+
+for n= 1:length(WaveOut.T)
+    %Rename outfile.
+    out_file=(['Wave_' sprintf('%.2f',WaveOut.Hm0(n)) 'm_' sprintf('%05.2f',WaveOut.T(n)) 'sec' ]);
+    %Creates toolboxs and wave data files
+    Monochromatic_wave(WaveOut.Hm0(n), WaveOut.T(n), h, t_steps, t_interval, out_file, Wavedir )
+end
+
+%#########################################
+%Create Porosity files
+[Si_idx Si_idx]=max(S.Si);
+fp=S.freqi(Si_idx);
+if A == 0
+    %Get porosity values based on a gaussian Power Transfer Function (PTF)
+    %method devloped in G.H Smith et al "Wave spectral bandwidth as a measure
+    %of avalible wave power" (2006). Then applies PTF to the interpolated
+    %boundary spectrum to calculate appropreat porosity.
+    alpha=200; % alpha = 40 =100% at Tp whereas alpha = 200 = 20% at Tp
+    sigma=0.01;
+    for n= 1:length(S.freqi)
+        PTF_norm(n)=1/(alpha*sigma*sqrt(2*pi))*exp(-0.5*((S.freqi(n)-fp)^2/sigma^2));
+    end
+    PTF=1-PTF_norm; %De-normalise PTF
+    Porosity_values=PTF;
+elseif A == 1
+    %Absorbtion/Porosity parameters based on measured data from a test tank
+    %data (D.Clabby et al 2012)
+    [ PTF_oyster ] = Oyster_PTF( S.freqi);
+    PTF=1-PTF_oyster;
+    Porosity_values=PTF;
+end
+if Baseline == 1; Porosity_values(:,:) = 1; end
+%Create Porosity layers
+Create_Array_Porosity_Layers(Porosity_template, Porosity_values, WEC_dimension, Wavedir, T)
+
+%#########################################
+%Create BW files
+%Opens template BW file and assinges Bathymetry, WGL and porosity layer.
+%Template was created in Mike21 where numerical parameters and outputs were
+%applied.
+%Open reference file
+fid = fopen(BW_dir_ref);
+InputText=textscan(fid,'%s',318,'delimiter','\n');
+BW_template=InputText{1};
+BWdir=[Wavedir(1:end-16) 'test' sprintf('%02.f',T) ]; %file directory for .bw file
+if isdir(BWdir) == 0; mkdir(BWdir); else delete([BWdir '\*.bw']);  end
+for n=1:N
+    temp=BW_template;
+    if  isinf(Domain_slope) == 0
+        %Input Bathy
+        temp(17)=cellstr([temp{17}(1:27) slope_filename '|']);
+        %Input Sponge
+        temp(136)=cellstr([temp{136}(1:45) sponge_filename '|']);
+    end
+    %Input porosity layer
+    porosity_filename=['Porosity_Array' sprintf('%.3f',Porosity_values(n)) '.dfs2'];
+    temp(126)=cellstr([temp{126}(1:13) BWdir(1:end-6) 'Porosity\Porosity_test' sprintf('%02.f',T) '\' porosity_filename '|']);
+    %Input WGL
+    wave_filename=['Wave_' sprintf('%.2f',WaveOut.Hm0(n)) 'm_' sprintf('%05.2f',WaveOut.T(n)) 'sec.dfs0' ];
+    temp(149)=cellstr([temp{149}(1:13) BWdir(1:end-6) 'Wave data\test' sprintf('%02.f',T) '\Wave_data\' wave_filename '|']);
+    %BW filename
+    BW_filename= ['test' sprintf('%02.f',T) '_' porosity_filename(1:end-5) '_' wave_filename(6:end-5) '.bw'];
+    fid = fopen([BWdir '\' BW_filename],'wt'); %write .bw file
+    for i=1:size(temp,1)
+        fprintf(fid,'%s\n',temp{i,end});
+    end
+    fclose(fid);
+end
+
+%#########################################
+%Create batch file and run tests outside Matlab
+file_dir_list=dir([BWdir '\*.bw']); %gets list of file with .bw extention
+filelist=char({file_dir_list.name});
+line_data=('start /w C:\Progra~2\DHI\2012\bin\MZlaunch.exe "');
+
+for n=1:N
+    BW_Run_batch_file(n,:)=[line_data  BWdir '\' filelist(n,:) '" -s -x'];
+end
+
+dlmwrite([BWdir '\BW_Run_Batch_file.bat'], BW_Run_batch_file,'delimiter', '')
+fprintf('\nFile created: ''%s''\n','BW_Run_Batch_file.bat');
+fprintf('\nSimulation Started........\n')
+cd(BWdir)
+system('start /b BW_Run_Batch_file.bat') %Runs .bat file in background of Matlab
+%Alternative without changing working directory
+%run_string=['start /b ' BWdir 'BW_Run_Batch_file.bat'];
+%system(run_string)
+
+%#######################################
+%% Create a test log file 
+BWdir=[Wavedir(1:end-16) 'test12' ];
+
+log_filenames = dir([BWdir '\*sec.log']);
+log_filenames = char({log_filenames.name});
+
+%Create log variable
+Test_log={'Test Name', 'Simulation Status', 'No. Completed Tsteps','No. Model Outputs','Comments'};
+
+for n=1:size(log_filenames,1)
+    
+    fid = fopen([BWdir '\' log_filenames(n,:)]);
+    InputText=textscan(fid,'%s',600,'delimiter','\n');
+    log_template=InputText{1};
+    %filename to log variable
+    Test_log(n+1,1)=cellstr(log_filenames(n,:));
+    
+    %find 'Succesful run completion'
+    Comp_idx = find(ismember(log_template, 'Succesful run completion'));
+    
+    %If Succesful Comp_idx = 0 so write to variable.
+    if isempty(Comp_idx) == 0
+        %write values to variable
+        Test_log(n+1,2)=cellstr('Succesful run completion');
+        
+        tstep_str=('=========================== Run Statistics ===========================');
+        tstep_cellidx=find(ismember(log_template, tstep_str))+2;
+        No_tsteps = str2num(log_template{tstep_cellidx}(21:end));
+        
+        Model_outputs= floor(No_tsteps/400);
+        
+        Test_log(n+1,3)={No_tsteps};
+        Test_log(n+1,4)={Model_outputs};
+        %if not complete model simulation write data to variable
+    else
+        try
+            Test_log(n+1,2)=cellstr('Abnormal completion');
+            
+            str1='---------- B L O W  -  U P  detected ---';
+            str2='Abnormal completion';
+            end_idx=find(ismember(log_template, str1)|ismember(log_template, str2));
+            
+            No_tsteps=str2num(log_template{end_idx-2}(11:end));
+            Model_outputs= floor(No_tsteps/400);
+            
+            Test_log(n+1,3)={No_tsteps};
+            Test_log(n+1,4)={Model_outputs};
+            Test_log(n+1,5)=cellstr(log_template{end_idx-1});
+        catch 
+            Test_log(n+1,2)=cellstr('Abnormal completion');
+            Test_log(n+1,3)=cellstr('0');
+            Test_log(n+1,4)=cellstr('0');
+            Test_log(n+1,5)=cellstr('No time steps completed');
+        end
+    end
+end
+
+%Create test log file
+CELL2CSV([BWdir '\Test_log.txt'],Test_log,'\t');
+
+
